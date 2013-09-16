@@ -67,6 +67,8 @@ class Machine(Base):
     status_changed_on = Column(DateTime(timezone=False), nullable=True)
     resultserver_ip = Column(String(255), nullable=False)
     resultserver_port = Column(String(255), nullable=False)
+    versions_cpe = Column(String(255), nullable=True)
+    description = Column(String(255), nullable=True)
 
     def __repr__(self):
         return "<Machine('{0}','{1}')>".format(self.id, self.name)
@@ -102,7 +104,9 @@ class Machine(Base):
                  interface,
                  snapshot,
                  resultserver_ip,
-                 resultserver_port):
+                 resultserver_port,
+                 versions_cpe,
+                 description):
         self.name = name
         self.label = label
         self.ip = ip
@@ -111,6 +115,8 @@ class Machine(Base):
         self.snapshot = snapshot
         self.resultserver_ip = resultserver_ip
         self.resultserver_port = resultserver_port
+        self.versions_cpe = versions_cpe
+        self.description = description
 
 class Tag(Base):
     """Tag describing anything you want."""
@@ -416,7 +422,9 @@ class Database(object):
                     interface,
                     snapshot,
                     resultserver_ip,
-                    resultserver_port):
+                    resultserver_port,
+                    versions_cpe,
+                    description):
         """Add a guest machine.
         @param name: machine id
         @param label: machine label
@@ -426,6 +434,8 @@ class Database(object):
         @param snapshot: snapshot name to use instead of the current one, if configured
         @param resultserver_ip: IP address of the Result Server
         @param resultserver_port: port of the Result Server
+        @param versions_cpe: Installed packages versions in CPE format
+        @param description: VM Description
         """
         session = self.Session()
         machine = Machine(name=name,
@@ -435,7 +445,9 @@ class Database(object):
                           interface=interface,
                           snapshot=snapshot,
                           resultserver_ip=resultserver_ip,
-                          resultserver_port=resultserver_port)
+                          resultserver_port=resultserver_port,
+                          versions_cpe=versions_cpe,
+                          description=description)
         # Deal with tags format (i.e. foo,bar,baz)
         if tags:
             for tag in tags.replace(" ","").split(","):
