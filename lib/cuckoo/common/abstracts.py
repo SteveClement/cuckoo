@@ -96,7 +96,7 @@ class Machinery(object):
                 # If configured, use specific resultserver IP and port, else use the default value.
                 machine.resultserver_ip = machine_opts.get("resultserver_ip", self.options_globals.resultserver.ip)
                 machine.resultserver_port = machine_opts.get("resultserver_port", self.options_globals.resultserver.port)
-                machine.versions_cpe = machine_opts["versions_cpe"]A
+                machine.versions_cpe = machine_opts["versions_cpe"]
                 machine.description = machine_opts["description"]
 
                 # Strip params.
