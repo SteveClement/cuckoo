@@ -7,15 +7,35 @@ import logging
 import datetime
 
 from lib.cuckoo.common.abstracts import Processing
-from lib.cuckoo.common.utils import convert_to_printable, logtime
-from lib.cuckoo.common.netlog import NetlogParser
 from lib.cuckoo.common.config import Config
+from lib.cuckoo.common.netlog import NetlogParser, BsonParser
+from lib.cuckoo.common.utils import convert_to_printable, logtime
+from lib.cuckoo.common.utils import cleanup_value
 
 log = logging.getLogger(__name__)
 
+def fix_key(key):
+    """Fix a registry key to have it normalized.
+    @param key: raw key
+    @returns: normalized key
+    """
+    res = key
+    if key.lower().startswith("registry\\machine\\"):
+        res = "HKEY_LOCAL_MACHINE\\" + key[17:]
+    elif key.lower().startswith("registry\\user\\"):
+        res = "HKEY_USERS\\" + key[14:]
+    elif key.lower().startswith("\\registry\\machine\\"):
+        res = "HKEY_LOCAL_MACHINE\\" + key[18:]
+    elif key.lower().startswith("\\registry\\user\\"):
+        res = "HKEY_USERS\\" + key[15:]
+
+    if not res.endswith("\\\\"):
+        res = res + "\\"
+    return res
+
 class ParseProcessLog(list):
     """Parses process log file."""
-    
+
     def __init__(self, log_path):
         """@param log_path: log file path."""
         self._log_path = log_path
@@ -28,21 +48,35 @@ class ParseProcessLog(list):
         self.first_seen = None
         self.calls = self
         self.lastcall = None
-        self.parsecount = 0
 
         if os.path.exists(log_path) and os.stat(log_path).st_size > 0:
             self.parse_first_and_reset()
 
     def parse_first_and_reset(self):
         self.fd = open(self._log_path, "rb")
-        self.parser = NetlogParser(self)
-        self.parser.read_next_message()
+
+        if self._log_path.endswith(".bson"):
+            self.parser = BsonParser(self)
+        elif self._log_path.endswith(".raw"):
+            self.parser = NetlogParser(self)
+        else:
+            self.fd.close()
+            self.fd = None
+            return
+
+        # get the process information from file to determine
+        # process id (file names)
+        while not self.process_id:
+            self.parser.read_next_message()
+
         self.fd.seek(0)
 
     def read(self, length):
-        if length == 0: return b''
+        if not length:
+            return ''
         buf = self.fd.read(length)
-        if not buf or len(buf) != length: raise EOFError()
+        if not buf or len(buf) != length:
+            raise EOFError()
         return buf
 
     def __iter__(self):
@@ -50,14 +84,15 @@ class ParseProcessLog(list):
         #log.debug('iter called by this guy: {0}'.format(inspect.stack()[1]))
         return self
 
-    def __getitem__(self, key):
-        return getattr(self, key)
-
     def __repr__(self):
-        return "ParseProcessLog {0}".format(self._log_path)
+        return "<ParseProcessLog log-path: %r>" % self._log_path
 
     def __nonzero__(self):
-        return True
+        return self.wait_for_lastcall()
+
+    def reset(self):
+        self.fd.seek(0)
+        self.lastcall = None
 
     def compare_calls(self, a, b):
         """Compare two calls for equality. Same implementation as before netlog.
@@ -66,16 +101,17 @@ class ParseProcessLog(list):
         @return: True if a == b else False
         """
         if a["api"] == b["api"] and \
-           a["status"] == b["status"] and \
-           a["arguments"] == b["arguments"] and \
-           a["return"] == b["return"]:
+                a["status"] == b["status"] and \
+                a["arguments"] == b["arguments"] and \
+                a["return"] == b["return"]:
             return True
         return False
 
     def wait_for_lastcall(self):
         while not self.lastcall:
             r = None
-            try: r = self.parser.read_next_message()
+            try:
+                r = self.parser.read_next_message()
             except EOFError:
                 return False
 
@@ -84,19 +120,20 @@ class ParseProcessLog(list):
         return True
 
     def next(self):
-        x = self.wait_for_lastcall()
-        if not x:
-            self.parsecount += 1
-            self.fd.seek(0)
+        if not self.fd:
+            raise StopIteration()
+
+        if not self.wait_for_lastcall():
+            self.reset()
             raise StopIteration()
 
         nextcall, self.lastcall = self.lastcall, None
 
-        x = self.wait_for_lastcall()
+        self.wait_for_lastcall()
         while self.lastcall and self.compare_calls(nextcall, self.lastcall):
             nextcall["repeated"] += 1
             self.lastcall = None
-            x = self.wait_for_lastcall()
+            self.wait_for_lastcall()
 
         return nextcall
 
@@ -107,7 +144,7 @@ class ParseProcessLog(list):
     def log_thread(self, context, pid):
         pass
 
-    def log_call(self, context, apiname, modulename, arguments):
+    def log_call(self, context, apiname, category, arguments):
         apiindex, status, returnval, tid, timediff = context
 
         current_time = self.first_seen + datetime.timedelta(0, 0, timediff*1000)
@@ -115,10 +152,13 @@ class ParseProcessLog(list):
 
         self.lastcall = self._parse([timestring,
                                      tid,
-                                     modulename,
+                                     category,
                                      apiname, 
                                      status,
                                      returnval] + arguments)
+
+    def log_error(self, emsg):
+        log.warning("ParseProcessLog error condition on log %s: %s", str(self._log_path), emsg)
 
     def _parse(self, row):
         """Parse log row.
@@ -145,19 +185,15 @@ class ParseProcessLog(list):
             argument = {}
 
             # Split the argument name with its value based on the separator.
-            try:                
-                (arg_name, arg_value) = row[index]
+            try:
+                arg_name, arg_value = row[index]
             except ValueError as e:
                 log.debug("Unable to parse analysis row argument (row=%s): %s", row[index], e)
                 continue
 
             argument["name"] = arg_name
 
-            arg_value = str(arg_value)
-            if arg_value[:4] == "\\??\\":
-                arg_value = arg_value[4:]
-
-            argument["value"] = convert_to_printable(arg_value)
+            argument["value"] = convert_to_printable(cleanup_value(arg_value))
             arguments.append(argument)
 
         call["timestamp"] = timestamp
@@ -169,7 +205,7 @@ class ParseProcessLog(list):
         if isinstance(return_value, int):
             call["return"] = "0x%.08x" % return_value
         else:
-            call["return"] = convert_to_printable(str(return_value))
+            call["return"] = convert_to_printable(cleanup_value(return_value))
 
         call["arguments"] = arguments
         call["repeated"] = 0
@@ -204,9 +240,6 @@ class Processes:
 
             if os.path.isdir(file_path):
                 continue
-            
-            if not file_path.endswith(".raw"):
-                continue
 
             # Skipping the current log file if it's too big.
             if os.stat(file_path).st_size > self.cfg.processing.analysis_size_limit:
@@ -215,16 +248,17 @@ class Processes:
 
             # Invoke parsing of current log file.
             current_log = ParseProcessLog(file_path)
-            if current_log.process_id == None: continue
+            if current_log.process_id is None:
+                continue
 
             # If the current log actually contains any data, add its data to
-            # the global results list.
+            # the results list.
             results.append({
                 "process_id": current_log.process_id,
                 "process_name": current_log.process_name,
                 "parent_id": current_log.parent_id,
                 "first_seen": logtime(current_log.first_seen),
-                "calls": current_log
+                "calls": current_log.calls,
             })
 
         # Sort the items in the results list chronologically. In this way we
@@ -237,7 +271,7 @@ class Summary:
     """Generates summary information."""
 
     key = "summary"
-    
+
     def __init__(self):
         self.keys = []
         self.mutexes = []
@@ -250,6 +284,7 @@ class Summary:
                 return None
 
         name = ""
+
         if registry == 0x80000000:
             name = "HKEY_CLASSES_ROOT\\"
         elif registry == 0x80000001:
@@ -269,8 +304,9 @@ class Summary:
                 if registry == known_handle["handle"]:
                     name = known_handle["name"] + "\\"
 
-        self.handles.append({"handle" : handle, "name" : name + subkey})
-        return name + subkey
+        key = fix_key(name + subkey)
+        self.handles.append({"handle": handle, "name": key})
+        return key
 
     def event_apicall(self, call, process):
         """Generate processes list from streamed calls/processes.
@@ -293,6 +329,34 @@ class Summary:
             name = self._check_registry(registry, subkey, handle)
             if name and name not in self.keys:
                 self.keys.append(name)
+        elif call["api"].startswith("NtOpenKey"):
+            registry = -1
+            subkey = ""
+            handle = 0
+
+            for argument in call["arguments"]:
+                if argument["name"] == "ObjectAttributes":
+                    subkey = argument["value"]
+                elif argument["name"] == "KeyHandle":
+                    handle = int(argument["value"], 16)
+
+            name = self._check_registry(registry, subkey, handle)
+            if name and name not in self.keys:
+                self.keys.append(name)
+        elif call["api"].startswith("NtDeleteValueKey"):
+            registry = -1
+            subkey = ""
+            handle = 0
+
+            for argument in call["arguments"]:
+                if argument["name"] == "ValueName":
+                    subkey = argument["value"]
+                elif argument["name"] == "KeyHandle":
+                    handle = int(argument["value"], 16)
+
+            name = self._check_registry(registry, subkey, handle)
+            if name and name not in self.keys:
+                self.keys.append(name)
         elif call["api"].startswith("RegCloseKey"):
             handle = 0
 
@@ -301,8 +365,12 @@ class Summary:
                     handle = int(argument["value"], 16)
 
             if handle != 0:
-                try: self.handles.remove(handle)
-                except ValueError: pass
+                for a in self.handles:
+                    if a["handle"] == handle:
+                        try:
+                            self.handles.remove(a)
+                        except ValueError:
+                            pass
 
         elif call["category"] == "filesystem":
             for argument in call["arguments"]:
@@ -330,86 +398,8 @@ class Summary:
         """
         return {"files": self.files, "keys": self.keys, "mutexes": self.mutexes}
 
-
-class ProcessTree:
-    """Creates process tree."""
-
-    key = "processtree"
-
-    def __init__(self):
-        self.processes = []
-        self.proctree = []
-        self.procmap = {}
-
-    def add_node(self, node, parent_id, tree):
-        """Add a node to a tree.
-        @param node: node to add.
-        @param parent_id: parent node.
-        @param tree: processes tree.
-        @return: boolean with operation success status.
-        """
-        for process in tree:
-            if process["pid"] == parent_id:
-                new = {}
-                new["name"] = node["name"]
-                new["pid"] = node["pid"]
-                new["children"] = []
-                process["children"].append(new)
-                return True
-            self.add_node(node, parent_id, process["children"])
-            
-        return False
-
-    def populate(self, node):
-        """Populate tree.
-        @param node: node to add.
-        @return: True.
-        """
-        for children in node["children"]:
-            for proc in self.processes:
-                if int(proc["pid"]) == int(children):
-                    self.add_node(proc, node["pid"], self.proctree)
-                    self.populate(proc)
-
-        return True
-
-    def event_apicall(self, call, entry):
-        """Generate processes list from streamed calls/processes.
-        @return: None.
-        """
-        pid = int(entry["process_id"])
-
-        if not pid in self.procmap:
-            process = {}
-            process["name"] = entry["process_name"]
-            process["pid"] = int(entry["process_id"])
-            process["children"] = []
-        
-            self.procmap[pid] = process
-            self.processes.append(process)
-        else:
-            process = self.procmap[pid]
-        
-        if call["api"] == "CreateProcessInternalW":
-            for argument in call["arguments"]:
-                if argument["name"] == "ProcessId":
-                    process["children"].append(int(argument["value"]))
-
-    def run(self):
-        """Run analysis.
-        @return: results dict or None.
-        """
-        if len(self.processes) > 0:    
-            root = {}
-            root["name"] = self.processes[0]["name"]
-            root["pid"] = self.processes[0]["pid"]
-            root["children"] = []
-            self.proctree.append(root)
-            self.populate(self.processes[0])
-
-        return self.proctree
-
 class Enhanced(object):
+    """Generates a more extensive high-level representation than Summary."""
 
     key = "enhanced"
 
@@ -421,14 +411,15 @@ class Enhanced(object):
         self.eid = 0
         self.details = details
         self.filehandles = {}
+        self.servicehandles = {}
         self.keyhandles = {
-            "0x80000000" : "HKEY_CLASSES_ROOT\\",
-            "0x80000001" : "HKEY_CURRENT_USER\\",
-            "0x80000002" : "HKEY_LOCAL_MACHINE\\",
-            "0x80000003" : "HKEY_USERS\\",
-            "0x80000004" : "HKEY_PERFORMANCE_DATA\\",
-            "0x80000005" : "HKEY_CURRENT_CONFIG\\",
-            "0x80000006" : "HKEY_DYN_DATA\\"
+            "0x80000000": "HKEY_CLASSES_ROOT\\",
+            "0x80000001": "HKEY_CURRENT_USER\\",
+            "0x80000002": "HKEY_LOCAL_MACHINE\\",
+            "0x80000003": "HKEY_USERS\\",
+            "0x80000004": "HKEY_PERFORMANCE_DATA\\",
+            "0x80000005": "HKEY_CURRENT_CONFIG\\",
+            "0x80000006": "HKEY_DYN_DATA\\"
         }
         self.modules = {}
         self.procedures = {}
@@ -439,12 +430,6 @@ class Enhanced(object):
         Add a procedure address
         """
         self.procedures[base] = "{0}:{1}".format(self._get_loaded_module(mbase), name)
-
-    def _get_procedure(self, base):
-        """
-        Get the name of a procedure
-        """
-        return self.procedures.get(base, "")
 
     def _add_loaded_module(self, name, base):
         """
@@ -469,12 +454,12 @@ class Enhanced(object):
             return self.keyhandles[handle]
 
         name = ""
-        if registry and registry != "0x00000000" and\
-            registry in self.keyhandles:
+        if registry and registry != "0x00000000" and \
+                registry in self.keyhandles:
             name = self.keyhandles[registry]
 
         nkey = name + subkey
-        nkey = self._fix_key(nkey)
+        nkey = fix_key(nkey)
 
         self.keyhandles[handle] = nkey
 
@@ -482,30 +467,14 @@ class Enhanced(object):
 
     def _remove_keyhandle(self, handle):
         key = self._get_keyhandle(handle)
-        try:
+
+        if handle in self.keyhandles:
             self.keyhandles.pop(handle)
-        except KeyError:
-            pass
+
         return key
 
     def _get_keyhandle(self, handle):
-        try:
-            return self.keyhandles[handle]
-        except KeyError:
-            return ""
-
-    def _fix_key(self, key):
-        """ Fix a registry key to have it normalized
-        """
-        res = key
-        if key.lower().startswith("registry\\machine\\"):
-            res = "HKEY_LOCAL_MACHINE\\" + key[17:]
-        elif key.lower().startswith("registry\\user\\"):
-            res = "HKEY_USERS\\" + key[14:]
-
-        if not res.endswith("\\\\"):
-            res = res + "\\"
-        return res
+        return self.keyhandles.get(handle, "")
 
     def _process_call(self, call):
         """ Gets files calls
@@ -524,7 +493,6 @@ class Enhanced(object):
         def _generic_handle_details(self, call, item):
             """
             Generic handling of api calls
-
             @call: the call dict
             @item: Generic item to process
             """
@@ -532,21 +500,21 @@ class Enhanced(object):
             if call["api"] in item["apis"]:
                 args = _load_args(call)
                 self.eid += 1
+
                 event = {
-                    "event" : item["event"],
-                    "object" : item["object"],
+                    "event": item["event"],
+                    "object": item["object"],
                     "timestamp": call["timestamp"],
                     "eid": self.eid,
                     "data": {}
                 }
-                for (logname, dataname) in item["args"]:
-                    event["data"][logname] = args.get(dataname, None)
+
+                for logname, dataname in item["args"]:
+                    event["data"][logname] = args.get(dataname)
                 return event
 
         def _generic_handle(self, data, call):
-            """
-            Generic handling of api calls
-            """
+            """Generic handling of api calls."""
             for item in data:
                 event = _generic_handle_details(self, call, item)
                 if event:
@@ -554,93 +522,98 @@ class Enhanced(object):
 
             return None
 
-        # File handles
-        def _add_file_handle(handles, handle, filename):
+        # Generic handles
+        def _add_handle(handles, handle, filename):
             handles[handle] = filename
 
-        def _remove_file_handle(handles, handle):
-            try:
+        def _remove_handle(handles, handle):
+            if handle in handles:
                 handles.pop(handle)
-            except KeyError:
-                pass
 
-        def _get_file_handle(handles, handle):
-            try:
-                return handles[handle]
-            except KeyError:
-                return None
+        def _get_handle(handles, handle):
+            return handles.get(handle)
+
+        def _get_service_action(control_code):
+            """@see: http://msdn.microsoft.com/en-us/library/windows/desktop/ms682108%28v=vs.85%29.aspx"""
+            codes = {1: "stop",
+                     2: "pause",
+                     3: "continue",
+                     4: "info"}
+
+            default = "user" if control_code >= 128 else "notify"
+            return codes.get(control_code, default)
 
         event = None
 
         gendat = [
             {
-                "event" : "move",
-                "object" : "file",
-                "apis" : [
+                "event": "move",
+                "object": "file",
+                "apis": [
                     "MoveFileWithProgressW",
                     "MoveFileExA",
                     "MoveFileExW"
                 ],
-                "args" : [
+                "args": [
                     ("from", "ExistingFileName"),
                     ("to", "NewFileName")
                 ]
             },
             {
-                "event" : "copy",
-                "object" : "file",
-                "apis" : [
+                "event": "copy",
+                "object": "file",
+                "apis": [
                     "CopyFileA",
                     "CopyFileW",
                     "CopyFileExW",
                     "CopyFileExA"
                 ],
-                "args" : [
+                "args": [
                     ("from", "ExistingFileName"),
                     ("to", "NewFileName")
                 ]
             },
             {
-                "event" : "delete",
-                "object" : "file",
-                "apis" : [
+                "event": "delete",
+                "object": "file",
+                "apis": [
                     "DeleteFileA",
                     "DeleteFileW",
                     "NtDeleteFile"
                 ],
-                "args" : [("file", "FileName")]
+                "args": [("file", "FileName")]
             },
             {
-                "event" : "delete",
-                "object" : "dir",
-                "apis" : [
+                "event": "delete",
+                "object": "dir",
+                "apis": [
                     "RemoveDirectoryA",
                     "RemoveDirectoryW"
                 ],
-                "args" : [("file", "DirectoryName")]
+                "args": [("file", "DirectoryName")]
             },
             {
-                "event" : "create",
-                "object" : "dir",
-                "apis" : [
+                "event": "create",
+                "object": "dir",
+                "apis": [
                     "CreateDirectoryW",
                     "CreateDirectoryExW"
                 ],
-                "args" : [("file", "DirectoryName")]
+                "args": [("file", "DirectoryName")]
             },
             {
-                "event" : "write",
-                "object" : "file",
-                "apis" : [
+                "event": "write",
+                "object": "file",
+                "apis": [
                     "URLDownloadToFileW",
                     "URLDownloadToFileA"
                 ],
-                "args" : [("file", "FileName")]
+                "args": [("file", "FileName")]
             },
             {
-                "event" : "execute",
-                "object" : "file",
-                "apis" : [
+                "event": "execute",
+                "object": "file",
+                "apis": [
                     "CreateProcessAsUserA",
                     "CreateProcessAsUserW",
                     "CreateProcessA",
@@ -648,12 +621,29 @@ class Enhanced(object):
                     "NtCreateProcess",
                     "NtCreateProcessEx"
                 ],
-                "args" : [("file", "FileName")]
+                "args": [("file", "FileName")]
             },
             {
-                "event" : "load",
-                "object" : "library",
-                "apis" : [
+                "event": "execute",
+                "object": "file",
+                "apis": [
+                    "CreateProcessInternalW",
+                ],
+                "args": [("file", "CommandLine")]
+            },
+            {
+                "event": "execute",
+                "object": "file",
+                "apis": [
+                    "ShellExecuteExA",
+                    "ShellExecuteExW",
+                ],
+                "args": [("file", "FilePath")]
+            },
+            {
+                "event": "load",
+                "object": "library",
+                "apis": [
                     "LoadLibraryA",
                     "LoadLibraryW",
                     "LoadLibraryExA",
@@ -661,92 +651,104 @@ class Enhanced(object):
                     "LdrLoadDll",
                     "LdrGetDllHandle"
                 ],
-                "args" : [
+                "args": [
                     ("file", "FileName"),
                     ("pathtofile", "PathToFile"),
                     ("moduleaddress", "BaseAddress")
                 ]
             },
             {
-                "event" : "findwindow",
-                "object" : "windowname",
-                "apis" : [
+                "event": "findwindow",
+                "object": "windowname",
+                "apis": [
                     "FindWindowA",
                     "FindWindowW",
                     "FindWindowExA",
                     "FindWindowExW"
                 ],
-                "args" : [
+                "args": [
                     ("classname", "ClassName"),
                     ("windowname", "WindowName")
                 ]
             },
             {
-                "event" : "read",
-                "object" : "file",
-                "apis" : [
+                "event": "read",
+                "object": "file",
+                "apis": [
                     "NtReadFile",
                     "ReadFile"
                 ],
-                "args" : []
+                "args": []
             },
             {
-                "event" : "write",
-                "object" : "file",
-                "apis" : ["NtWriteFile"],
-                "args" : []
+                "event": "write",
+                "object": "file",
+                "apis": ["NtWriteFile"],
+                "args": []
             },
             {
-                "event" : "delete",
-                "object" : "registry",
-                "apis" : [
+                "event": "delete",
+                "object": "registry",
+                "apis": [
                     "RegDeleteKeyA",
                     "RegDeleteKeyW"
                 ],
-                "args" : []
+                "args": []
             },
             {
-                "event" : "write",
-                "object" : "registry",
-                "apis" : [
+                "event": "write",
+                "object": "registry",
+                "apis": [
                     "RegSetValueExA",
                     "RegSetValueExW"
                 ],
-                "args" : [
+                "args": [
                     ("content", "Buffer"),
                     ("object", "object")
                 ]
             },
             {
-                "event" : "read",
-                "object" : "registry",
-                "apis" : [
+                "event": "read",
+                "object": "registry",
+                "apis": [
                     "RegQueryValueExA",
                     "RegQueryValueExW",
                     "NtQueryValueKey"
                 ],
-                "args" : []
+                "args": []
             },
             {
-                "event" : "delete",
-                "object" : "registry",
-                "apis" : [
+                "event": "delete",
+                "object": "registry",
+                "apis": [
                     "RegDeleteValueA",
                     "RegDeleteValueW",
                     "NtDeleteValueKey"
                 ],
-                "args" : []
+                "args": []
             },
             {
-                "event" : "create",
-                "object" : "windowshook",
-                "apis" : ["SetWindowsHookExA"],
-                "args" : [
+                "event": "create",
+                "object": "windowshook",
+                "apis": ["SetWindowsHookExA"],
+                "args": [
                     ("id", "HookIdentifier"),
                     ("moduleaddress", "ModuleAddress"),
                     ("procedureaddress", "ProcedureAddress")
                 ]
-            },                  
+            },
+            {
+                "event": "modify",
+                "object": "service",
+                "apis": ["ControlService"],
+                "args": [("controlcode", "ControlCode")]
+            },
+            {
+                "event": "delete",
+                "object": "service",
+                "apis": ["DeleteService"],
+                "args": [],
+            },
         ]
 
         # Not sure I really want this, way too noisy anyway and doesn't bring
@@ -763,7 +765,7 @@ class Enhanced(object):
 
         if event:
             if call["api"] in ["NtReadFile", "ReadFile", "NtWriteFile"]:
-                event["data"]["file"] = _get_file_handle(self.filehandles, args["FileHandle"])
+                event["data"]["file"] = _get_handle(self.filehandles, args["FileHandle"])
 
             elif call["api"] in ["RegDeleteKeyA", "RegDeleteKeyW"]:
                 event["data"]["regkey"] = "{0}{1}".format(self._get_keyhandle(args.get("Handle", "")), args.get("SubKey", ""))
@@ -771,10 +773,10 @@ class Enhanced(object):
             elif call["api"] in ["RegSetValueExA", "RegSetValueExW"]:
                 event["data"]["regkey"] = "{0}{1}".format(self._get_keyhandle(args.get("Handle", "")), args.get("ValueName", ""))
 
-            elif call["api"] in ["RegQueryValueExA", "RegQueryValueExW", "RegDeleteValueA", "RegDeleteValueW", "NtDeleteValueKey"]:
+            elif call["api"] in ["RegQueryValueExA", "RegQueryValueExW", "RegDeleteValueA", "RegDeleteValueW"]:
                 event["data"]["regkey"] = "{0}{1}".format(self._get_keyhandle(args.get("Handle", "UNKNOWN")), args.get("ValueName", ""))
 
-            elif call["api"] in ["NtQueryValueKey"]:
+            elif call["api"] in ["NtQueryValueKey", "NtDeleteValueKey"]:
                 event["data"]["regkey"] = "{0}{1}".format(self._get_keyhandle(args.get("KeyHandle", "UNKNOWN")), args.get("ValueName", ""))
 
             elif call["api"] in ["LoadLibraryA", "LoadLibraryW", "LoadLibraryExA", "LoadLibraryExW", "LdrGetDllHandle"] and call["status"]:
@@ -790,28 +792,40 @@ class Enhanced(object):
             elif call["api"] in ["SetWindowsHookExA"]:
                 event["data"]["module"] = self._get_loaded_module(args.get("ModuleAddress", ""))
 
+            if call["api"] in ["ControlService", "DeleteService"]:
+                event["data"]["service"] = _get_handle(self.servicehandles, args["ServiceHandle"])
+
+            if call["api"] in ["ControlService"]:
+                event["data"]["action"] = _get_service_action(args["ControlCode"])
+
             return event
 
         elif call["api"] in ["SetCurrentDirectoryA", "SetCurrentDirectoryW"]:
             self.currentdir = args["Path"]
 
+        # Files
         elif call["api"] in ["NtCreateFile", "NtOpenFile"]:
-            _add_file_handle(self.filehandles, args["FileHandle"], args["FileName"])
+            _add_handle(self.filehandles, args["FileHandle"], args["FileName"])
 
         elif call["api"] in ["CreateFileW"]:
-            _add_file_handle(self.filehandles, call["return"], args["FileName"])
+            _add_handle(self.filehandles, call["return"], args["FileName"])
 
         elif call["api"] in ["NtClose", "CloseHandle"]:
-            _remove_file_handle(self.filehandles, args["Handle"])
+            _remove_handle(self.filehandles, args["Handle"])
 
+        # Services
+        elif call["api"] in ["OpenServiceW"]:
+            _add_handle(self.servicehandles, call["return"], args["ServiceName"])
+
+        # Registry
         elif call["api"] in ["RegOpenKeyExA", "RegOpenKeyExW", "RegCreateKeyExA", "RegCreateKeyExW"]:
-            regkey = self._add_keyhandle(args.get("Registry", ""), args.get("SubKey", ""), args.get("Handle", ""))
+            self._add_keyhandle(args.get("Registry", ""), args.get("SubKey", ""), args.get("Handle", ""))
 
         elif call["api"] in ["NtOpenKey"]:
-            regkey = self._add_keyhandle(None, args.get("ObjectAttributes", ""), args.get("KeyHandle", ""))
+            self._add_keyhandle(None, args.get("ObjectAttributes", ""), args.get("KeyHandle", ""))
 
         elif call["api"] in ["RegCloseKey"]:
-            regkey = self._remove_keyhandle(args.get("Handle", ""))
+            self._remove_keyhandle(args.get("Handle", ""))
 
         return event
 
@@ -829,15 +843,78 @@ class Enhanced(object):
         """
         return self.events
 
+class ProcessTree:
+    """Generates process tree."""
+
+    key = "processtree"
+
+    def __init__(self):
+        self.processes = []
+        self.tree = []
+
+    def add_node(self, node, tree):
+        """Add a node to a process tree.
+        @param node: node to add.
+        @param tree: processes tree.
+        @return: boolean with operation success status.
+        """
+        # Walk through the existing tree.
+        for process in tree:
+            # If the current process has the same ID of the parent process of
+            # the provided one, append it the children.
+            if process["pid"] == node["parent_id"]:
+                process["children"].append(node)
+            # Otherwise try with the children of the current process.
+            else:
+                self.add_node(node, process["children"])
+
+    def event_apicall(self, call, process):
+        for entry in self.processes:
+            if entry["pid"] == process["process_id"]:
+                return
+
+        self.processes.append(dict(
+            name=process["process_name"],
+            pid=process["process_id"],
+            parent_id=process["parent_id"],
+            children=[]
+        ))
+
+    def run(self):
+        children = []
+
+        # Walk through the generated list of processes.
+        for process in self.processes:
+            has_parent = False
+            # Walk through the list again.
+            for process_again in self.processes:
+                # If we find a parent for the first process, we mark it as
+                # as a child.
+                if process_again["pid"] == process["parent_id"]:
+                    has_parent = True
+
+            # If the process has a parent, add it to the children list.
+            if has_parent:
+                children.append(process)
+            # Otherwise it's an orphan and we add it to the tree root.
+            else:
+                self.tree.append(process)
+
+        # Now we loop over the remaining child processes.
+        for process in children:
+            self.add_node(process, self.tree)
+
+        return self.tree
+
 class BehaviorAnalysis(Processing):
     """Behavior Analyzer."""
+
+    key = "behavior"
 
     def run(self):
         """Run analysis.
         @return: results dict.
         """
-        self.key = "behavior"
-
         behavior = {}
         behavior["processes"] = Processes(self.logs_path).run()
 
@@ -848,17 +925,22 @@ class BehaviorAnalysis(Processing):
         ]
 
         # Iterate calls and tell interested signatures about them
-        for proc in behavior["processes"]:
-            for call in proc["calls"]:
-                for i in instances:
-                    try: r = i.event_apicall(call, proc)
+        for process in behavior["processes"]:
+            for call in process["calls"]:
+                for instance in instances:
+                    try:
+                        instance.event_apicall(call, process)
                     except:
-                        log.exception("Failure in partial behavior \"%s\"", i.key)
+                        log.exception("Failure in partial behavior \"%s\"", instance.key)
 
-        for i in instances:
+        for instance in instances:
             try:
-                behavior[i.key] = i.run()
+                behavior[instance.key] = instance.run()
             except:
-                log.exception("Failed to run partial behavior class \"%s\"", i.key)
+                log.exception("Failed to run partial behavior class \"%s\"", instance.key)
+
+            # Reset the ParseProcessLog instances after each module
+            for process in behavior["processes"]:
+                process["calls"].reset()
 
         return behavior

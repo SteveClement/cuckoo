@@ -5,15 +5,6 @@
 import math
 
 try:
-    from PIL import Image
-    from PIL import ImageGrab
-    from PIL import ImageChops
-    HAVE_PIL = True
-except:
-    HAVE_PIL = False
-
-try:
-    import Image
     import ImageGrab
     import ImageChops
     HAVE_PIL = True
@@ -38,8 +29,9 @@ class Screenshot:
         if not HAVE_PIL:
             return None
 
-        # To get a measure of how similar two images are, we use root-mean-square (RMS).
-        # If the images are exactly identical, this value is zero.
+        # To get a measure of how similar two images are, we use
+        # root-mean-square (RMS). If the images are exactly identical,
+        # this value is zero.
         diff = ImageChops.difference(img1, img2)
         h = diff.histogram()
         sq = (value*((idx%256)**2) for idx, value in enumerate(h))

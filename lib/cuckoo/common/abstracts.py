@@ -7,6 +7,8 @@ import re
 import logging
 import time
 
+import xml.etree.ElementTree as ET
+
 from lib.cuckoo.common.exceptions import CuckooCriticalError
 from lib.cuckoo.common.exceptions import CuckooMachineError
 from lib.cuckoo.common.exceptions import CuckooOperationalError
@@ -94,7 +96,7 @@ class Machinery(object):
                 # If configured, use specific resultserver IP and port, else use the default value.
                 machine.resultserver_ip = machine_opts.get("resultserver_ip", self.options_globals.resultserver.ip)
                 machine.resultserver_port = machine_opts.get("resultserver_port", self.options_globals.resultserver.port)
-                machine.versions_cpe = machine_opts["versions_cpe"]
+                machine.versions_cpe = machine_opts["versions_cpe"]A
                 machine.description = machine_opts["description"]
 
                 # Strip params.
@@ -120,9 +122,9 @@ class Machinery(object):
                 continue
 
     def _initialize_check(self):
-        """Runs checks against virtualization software when a machine manager 
+        """Runs checks against virtualization software when a machine manager
         is initialized.
-        @note: in machine manager modules you may override or superclass 
+        @note: in machine manager modules you may override or superclass
                his method.
         @raise CuckooMachineError: if a misconfiguration or a unkown vm state
                                    is found.
@@ -250,10 +252,10 @@ class LibVirtMachinery(Machinery):
     """Libvirt based machine manager.
 
     If you want to write a custom module for a virtualization software supported
-    by libvirt you have just to inherit this machine manager and change the 
+    by libvirt you have just to inherit this machine manager and change the
     connection string.
     """
-    
+
     # VM states.
     RUNNING = "running"
     POWEROFF = "poweroff"
@@ -294,22 +296,15 @@ class LibVirtMachinery(Machinery):
         @raise CuckooMachineError: if unable to start virtual machine.
         """
         log.debug("Starting machine %s", label)
-        
+
         if self._status(label) == self.RUNNING:
             raise CuckooMachineError("Trying to start an already started machine {0}".format(label))
 
-        # Get current snapshot.
         conn = self._connect()
 
-        try:
-            snapshots = self.vms[label].snapshotListNames(flags=0)
-            has_current = self.vms[label].hasCurrentSnapshot(flags=0)
-        except libvirt.libvirtError as e:
-            self._disconnect(conn)
-            raise CuckooMachineError("Unable to get snapshot info for virtual machine {0}: {1}".format(label, e))
-
         vm_info = self.db.view_machine_by_label(label)
-        if vm_info.snapshot and vm_info.snapshot in snapshots:
+        # If a snapshot is configured try to use it.
+        if vm_info.snapshot and vm_info.snapshot in self.vms[label].snapshotListNames(flags=0):
             # Revert to desired snapshot, if it exists.
             log.debug("Using snapshot {0} for virtual machine {1}".format(vm_info.snapshot, label))
             try:
@@ -318,12 +313,11 @@ class LibVirtMachinery(Machinery):
                 raise CuckooMachineError("Unable to restore snapshot {0} on virtual machine {1}".format(vm_info.snapshot, label))
             finally:
                 self._disconnect(conn)
-        elif has_current:
-            # Revert to current snapshot.
-            log.debug("Using current snapshot for virtual machine {0}".format(label)) 
+        elif self._get_snapshot(label):
+            snapshot = self._get_snapshot(label)
+            log.debug("Using snapshot {0} for virtual machine {1}".format(snapshot, label))
             try:
-                current = self.vms[label].snapshotCurrent(flags=0)
-                self.vms[label].revertToSnapshot(current, flags=0)
+                self.vms[label].revertToSnapshot(snapshot, flags=0)
             except libvirt.libvirtError:
                 raise CuckooMachineError("Unable to restore snapshot on virtual machine {0}".format(label))
             finally:
@@ -331,6 +325,7 @@ class LibVirtMachinery(Machinery):
         else:
             self._disconnect(conn)
             raise CuckooMachineError("No snapshot found for virtual machine {0}".format(label))
+
         # Check state.
         self._wait_status(label, self.RUNNING)
 
@@ -384,7 +379,7 @@ class LibVirtMachinery(Machinery):
         @return: status string.
         """
         log.debug("Getting status for %s", label)
-        
+
         # Stetes mapping of python-libvirt.
         # virDomainState
         # VIR_DOMAIN_NOSTATE = 0
@@ -486,6 +481,39 @@ class LibVirtMachinery(Machinery):
             return True
         else:
             return False
+
+    def _get_snapshot(self, label):
+        """Get current snapshot for virtual machine
+        @param label: virtual machine name
+        @return None or current snapshot
+        @raise CuckooMachineError: if cannot find current snapshot or too many snapshots avaible
+        """
+        # Checks for current snapshots.
+        conn = self._connect()
+        try:
+            vm = self.vms[label]
+            snap = vm.hasCurrentSnapshot(flags=0)
+        except libvirt.libvirtError:
+            self._disconnect(conn)
+            raise CuckooMachineError("Unable to get current snapshot for virtual machine {0}".format(label))
+        finally:
+            self._disconnect(conn)
+
+        if snap:
+            return vm.snapshotCurrent(flags=0)
+
+        # If no current snapshot, get the last one.
+        conn = self._connect()
+        try:
+            snaps = vm[label].snapshotListNames(flags=0)
+            getCreate = lambda sn: ET.fromstring(sn.getXMLDesc(flags=0)).findtext("./creationTime")
+            return max(getCreate(vm.snapshotLookupByName(n, flags=0)) for n in snaps)
+        except libvirt.libvirtError:
+            return None
+        except ValueError:
+            return None
+        finally:
+            self._disconnect(conn)
 
 class Processing(object):
     """Base abstract class for processing module."""
