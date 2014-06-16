@@ -1,15 +1,23 @@
-# Copyright (C) 2010-2013 Cuckoo Sandbox Developers.
+# Copyright (C) 2010-2014 Cuckoo Foundation.
 # This file is part of Cuckoo Sandbox - http://www.cuckoosandbox.org
 # See the file 'docs/LICENSE' for copying permission.
 
 import math
 
+
 try:
-    import ImageGrab
-    import ImageChops
+    from PIL import Image
+    from PIL import ImageChops
+    from PIL import ImageGrab
     HAVE_PIL = True
 except:
-    HAVE_PIL = False
+    try:
+        import Image
+        import ImageGrab
+        import ImageChops
+        HAVE_PIL = True
+    except:
+        HAVE_PIL = False
 
 class Screenshot:
     """Get screenshots."""
@@ -34,7 +42,7 @@ class Screenshot:
         # this value is zero.
         diff = ImageChops.difference(img1, img2)
         h = diff.histogram()
-        sq = (value*((idx%256)**2) for idx, value in enumerate(h))
+        sq = (value * ((idx % 256)**2) for idx, value in enumerate(h))
         sum_of_squares = sum(sq)
         rms = math.sqrt(sum_of_squares/float(img1.size[0] * img1.size[1]))
 
