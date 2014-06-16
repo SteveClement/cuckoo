@@ -1,8 +1,9 @@
-# Copyright (C) 2010-2013 Cuckoo Sandbox Developers.
+# Copyright (C) 2010-2014 Cuckoo Foundation.
 # This file is part of Cuckoo Sandbox - http://www.cuckoosandbox.org
 # See the file 'docs/LICENSE' for copying permission.
 
 import os
+import codecs
 import base64
 
 from lib.cuckoo.common.abstracts import Report
@@ -65,7 +66,7 @@ class ReportHTML(Report):
             raise CuckooReportError("Failed to generate HTML report: %s" % e)
         
         try:
-            with open(os.path.join(self.reports_path, "report.html"), "w") as report:
+            with codecs.open(os.path.join(self.reports_path, "report.html"), "w", encoding="utf-8") as report:
                 report.write(html)
         except (TypeError, IOError) as e:
             raise CuckooReportError("Failed to write HTML report: %s" % e)

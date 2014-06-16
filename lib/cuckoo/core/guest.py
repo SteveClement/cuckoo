@@ -1,4 +1,4 @@
-# Copyright (C) 2010-2013 Cuckoo Sandbox Developers.
+# Copyright (C) 2010-2014 Cuckoo Foundation.
 # This file is part of Cuckoo Sandbox - http://www.cuckoosandbox.org
 # See the file 'docs/LICENSE' for copying permission.
 
@@ -136,6 +136,13 @@ class GuestManager:
         if options["category"] == "file":
             options["file_name"] = sanitize_filename(options["file_name"])
 
+        # If the analysis timeout is higher than the critical timeout,
+        # automatically increase the critical timeout by one minute.
+        if options["timeout"] > self.timeout:
+            log.debug("Automatically increased critical timeout to %s",
+                      self.timeout)
+            self.timeout = options["timeout"] + 60
+
         try:
             # Wait for the agent to respond. This is done to check the
             # availability of the agent and verify that it's ready to receive
@@ -163,10 +170,9 @@ class GuestManager:
 
                 try:
                     self.server.add_malware(data, options["file_name"])
-                except MemoryError as e:
+                except Exception as e:
                     raise CuckooGuestError("{0}: unable to upload malware to "
-                                           "analysis machine, not enough "
-                                           "memory".format(self.id))
+                                           "analysis machine: {1}".format(self.id, e))
 
             # Launch the analyzer.
             pid = self.server.execute()

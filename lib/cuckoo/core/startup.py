@@ -1,4 +1,4 @@
-# Copyright (C) 2010-2013 Cuckoo Sandbox Developers.
+# Copyright (C) 2010-2014 Cuckoo Foundation.
 # This file is part of Cuckoo Sandbox - http://www.cuckoosandbox.org
 # See the file 'docs/LICENSE' for copying permission.
 
@@ -115,7 +115,9 @@ def check_version():
 
 
 class DatabaseHandler(logging.Handler):
-    """Logging to database handler."""
+    """Logging to database handler.
+    Used to log errors related to tasks in database.
+    """
 
     def emit(self, record):
         if hasattr(record, "task_id"):
@@ -188,7 +190,7 @@ def init_modules():
     import_package(modules.reporting)
 
     # Import machine manager.
-    import_plugin("modules.machinery." + Config().cuckoo.machine_manager)
+    import_plugin("modules.machinery." + Config().cuckoo.machinery)
 
     for category, entries in list_plugins().items():
         log.debug("Imported \"%s\" modules:", category)

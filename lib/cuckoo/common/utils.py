@@ -1,4 +1,4 @@
-# Copyright (C) 2010-2013 Cuckoo Sandbox Developers.
+# Copyright (C) 2010-2014 Cuckoo Foundation.
 # This file is part of Cuckoo Sandbox - http://www.cuckoosandbox.org
 # See the file 'docs/LICENSE' for copying permission.
 
@@ -7,12 +7,19 @@ import time
 import shutil
 import ntpath
 import string
-import chardet
 import tempfile
 import xmlrpclib
 from datetime import datetime
 
 from lib.cuckoo.common.exceptions import CuckooOperationalError
+from lib.cuckoo.common.config import Config
+from lib.cuckoo.common.constants import CUCKOO_ROOT
+
+try:
+    import chardet
+    HAVE_CHARDET = True
+except ImportError:
+    HAVE_CHARDET = False
 
 def create_folders(root=".", folders=[]):
     """Create directories.
@@ -21,10 +28,7 @@ def create_folders(root=".", folders=[]):
     @raise CuckooOperationalError: if fails to create folder.
     """
     for folder in folders:
-        if os.path.isdir(os.path.join(root, folder)):
-            continue
-        else:
-            create_folder(root, folder)
+        create_folder(root, folder)
 
 def create_folder(root=".", folder=None):
     """Create directory.
@@ -32,14 +36,13 @@ def create_folder(root=".", folder=None):
     @param folder: folder name to be created.
     @raise CuckooOperationalError: if fails to create folder.
     """
-    if not os.path.exists(os.path.join(root, folder)) and folder:
-        folder_path = os.path.join(root, folder)
-        if not os.path.isdir(folder_path):
-            try:
-                os.makedirs(folder_path)
-            except OSError:
-                raise CuckooOperationalError("Unable to create folder: %s" %
-                                             folder_path)
+    folder_path = os.path.join(root, folder)
+    if folder and not os.path.isdir(folder_path):
+        try:
+            os.makedirs(folder_path)
+        except OSError:
+            raise CuckooOperationalError("Unable to create folder: %s" %
+                                         folder_path)
 
 
 def delete_folder(folder):
@@ -55,9 +58,10 @@ def delete_folder(folder):
                                          "{0}".format(folder))
 
 
-# don't allow all characters in "string.printable", as newlines, carriage
-# returns, tabs, \x0b, and \x0c may mess up reports
-PRINTABLE_CHARACTERS = string.letters + string.digits + string.punctuation + " \t\r\n"
+# Don't allow all characters in "string.printable", as newlines, carriage
+# returns, tabs, \x0b, and \x0c may mess up reports.
+PRINTABLE_CHARACTERS = \
+    string.letters + string.digits + string.punctuation + " \t\r\n"
 
 
 def convert_char(c):
@@ -74,7 +78,7 @@ def convert_char(c):
 def is_printable(s):
     """ Test if a string is printable."""
     for c in s:
-        if not c in PRINTABLE_CHARACTERS:
+        if c not in PRINTABLE_CHARACTERS:
             return False
     return True
 
@@ -91,7 +95,7 @@ def datetime_to_iso(timestamp):
     """Parse a datatime string and returns a datetime in iso format.
     @param timestamp: timestamp string
     @return: ISO datetime
-    """  
+    """
     return datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S").isoformat()
 
 def get_filename_from_path(path):
@@ -110,10 +114,11 @@ def store_temp_file(filedata, filename):
     """
     filename = get_filename_from_path(filename)
 
-    # reduce length (100 is arbitrary)
+    # Reduce length (100 is arbitrary).
     filename = filename[:100]
 
-    tmppath = tempfile.gettempdir()
+    options = Config(os.path.join(CUCKOO_ROOT, "conf", "cuckoo.conf"))
+    tmppath = options.cuckoo.tmppath
     targetpath = os.path.join(tmppath, "cuckoo-tmp")
     if not os.path.exists(targetpath):
         os.mkdir(targetpath)
@@ -121,7 +126,7 @@ def store_temp_file(filedata, filename):
     tmp_dir = tempfile.mkdtemp(prefix="upload_", dir=targetpath)
     tmp_file_path = os.path.join(tmp_dir, filename)
     with open(tmp_file_path, "wb") as tmp_file:
-        # if filedata is file object, do chunked copy
+        # If filedata is file object, do chunked copy.
         if hasattr(filedata, "read"):
             chunk = filedata.read(1024)
             while chunk:
@@ -158,7 +163,7 @@ class TimeoutTransport(xmlrpclib.Transport):
 
     def make_connection(self, *args, **kwargs):
         conn = xmlrpclib.Transport.make_connection(self, *args, **kwargs)
-        if not self.timeout is None:
+        if self.timeout is not None:
             conn.timeout = self.timeout
         return conn
 
@@ -167,6 +172,7 @@ class Singleton(type):
     @see: http://stackoverflow.com/questions/6760685/creating-a-singleton-in-python
     """
     _instances = {}
+
     def __call__(cls, *args, **kwargs):
         if cls not in cls._instances:
             cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
@@ -223,7 +229,7 @@ def to_unicode(s):
     result = brute_enc(s)
 
     # Try via chardet.
-    if not result:
+    if not result and HAVE_CHARDET:
         result = chardet_enc(s)
 
     # If not possible to convert the input string, try again with
@@ -241,7 +247,7 @@ def cleanup_value(v):
     return v
 
 def sanitize_filename(x):
-    """Kind of awful but necessary sanitizing of filenames to 
+    """Kind of awful but necessary sanitizing of filenames to
     get rid of unicode problems."""
     out = ""
     for c in x:

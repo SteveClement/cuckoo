@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright (C) 2010-2013 Cuckoo Sandbox Developers.
+# Copyright (C) 2010-2014 Cuckoo Foundation.
 # This file is part of Cuckoo Sandbox - http://www.cuckoosandbox.org
 # See the file 'docs/LICENSE' for copying permission.
 
@@ -95,29 +95,14 @@ def main():
     global URL
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-a", "--all", help="Download everything",
-                        action="store_true", required=False)
-    parser.add_argument("-s", "--signatures",
-                        help="Download Cuckoo signatures",
-                        action="store_true", required=False)
-    parser.add_argument("-p", "--processing",
-                        help="Download processing modules",
-                        action="store_true", required=False)
-    parser.add_argument("-m", "--machinemanagers",
-                        help="Download machine managers",
-                        action="store_true", required=False)
-    parser.add_argument("-r", "--reporting",
-                        help="Download reporting modules",
-                        action="store_true", required=False)
-    parser.add_argument("-f", "--force",
-                        help="Install files without confirmation",
-                        action="store_true", required=False)
-    parser.add_argument("-w", "--rewrite",
-                        help="Rewrite existing files",
-                        action="store_true", required=False)
-    parser.add_argument("-b", "--branch",
-                        help="Specify a different branch",
-                        action="store", default="master", required=False)
+    parser.add_argument("-a", "--all", help="Download everything", action="store_true", required=False)
+    parser.add_argument("-s", "--signatures", help="Download Cuckoo signatures", action="store_true", required=False)
+    parser.add_argument("-p", "--processing", help="Download processing modules", action="store_true", required=False)
+    parser.add_argument("-m", "--machinemanagers", help="Download machine managers",action="store_true", required=False)
+    parser.add_argument("-r", "--reporting", help="Download reporting modules", action="store_true", required=False)
+    parser.add_argument("-f", "--force", help="Install files without confirmation", action="store_true", required=False)
+    parser.add_argument("-w", "--rewrite", help="Rewrite existing files", action="store_true", required=False)
+    parser.add_argument("-b", "--branch", help="Specify a different branch", action="store", default="master", required=False)
     args = parser.parse_args()
 
     enabled = []

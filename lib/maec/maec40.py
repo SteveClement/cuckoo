@@ -1,5 +1,5 @@
 # Copyright (c) 2013, The MITRE Corporation
-# Copyright (c) 2013, Cuckoo Developers
+# Copyright (c) 2010-2014, Cuckoo Developers
 # All rights reserved.
 
 # This file is part of Cuckoo Sandbox - http://www.cuckoosandbox.org
@@ -1203,7 +1203,7 @@ api_call_mappings = {
                                                                        "association_type" : "input",
                                                                        "forced" : {"associated_object_element" : "Type", 
                                                                                    "value" : "Service"}}},
-                   "parameter_associated_arguments" : {"ControlCode" : {"associated_argument_name" : "Control Mode",
+                   "parameter_associated_arguments" : {"ControlCode" : {"associated_argument_name" : "Control Code",
                                                                         "associated_argument_vocab" : "cyboxVocabs:ActionArgumentNameVocab-1.0"}}},
 "DeleteService" : {"action_name" : "delete service",
                    "action_vocab" : "maecVocabs:ServiceActionNameVocab-1.0",

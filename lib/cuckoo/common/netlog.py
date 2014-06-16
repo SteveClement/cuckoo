@@ -1,4 +1,4 @@
-# Copyright (C) 2010-2013 Cuckoo Sandbox Developers.
+# Copyright (C) 2010-2014 Cuckoo Foundation.
 # This file is part of Cuckoo Sandbox - http://www.cuckoosandbox.org
 # See the file 'docs/LICENSE' for copying permission.
 
@@ -12,6 +12,17 @@ try:
     HAVE_BSON = True
 except ImportError:
     HAVE_BSON = False
+
+if HAVE_BSON:
+    # The BSON module provided by pymongo works through its "BSON" class.
+    if hasattr(bson, "BSON"):
+        bson_decode = lambda d: bson.BSON(d).decode()
+    # The BSON module provided by "pip install bson" works through the
+    # "loads" function (just like pickle etc.)
+    elif hasattr(bson, "loads"):
+        bson_decode = lambda d: bson.loads(d)
+    else:
+        HAVE_BSON = False
 
 from lib.cuckoo.common.defines import REG_SZ, REG_EXPAND_SZ
 from lib.cuckoo.common.defines import REG_DWORD_BIG_ENDIAN
@@ -66,6 +77,9 @@ class NetlogParser(object):
             "r": self.read_registry,
             "R": self.read_registry,
         }
+
+    def close(self):
+        pass
 
     def read_next_message(self):
         apiindex, status = struct.unpack("BB", self.handler.read(2))
@@ -244,7 +258,10 @@ class BsonParser(object):
         self.infomap = {}
 
         if not HAVE_BSON:
-            log.critical("Starting BsonParser, but bson is not available!")
+            log.critical("Starting BsonParser, but bson is not available! (install with `pip install bson`)")
+
+    def close(self):
+        pass
 
     def read_next_message(self):
         data = self.handler.read(4)
@@ -257,7 +274,7 @@ class BsonParser(object):
         data += self.handler.read(blen-4)
 
         try:
-            dec = bson.BSON(data).decode()
+            dec = bson_decode(data)
         except Exception as e:
             log.warning("BsonParser decoding problem {0} on "
                         "data[:50] {1}".format(e, repr(data[:50])))
@@ -345,6 +362,13 @@ class BsonParser(object):
                 pid = argdict["ProcessIdentifier"]
                 self.handler.log_thread(context, pid)
                 return True
+
+            # elif apiname == "__anomaly__":
+                # tid = argdict["ThreadIdentifier"]
+                # subcategory = argdict["Subcategory"]
+                # msg = argdict["Message"]
+                # self.handler.log_anomaly(subcategory, tid, msg)
+                # return True
 
             context[1] = argdict.pop("is_success", 1)
             context[2] = argdict.pop("retval", 0)

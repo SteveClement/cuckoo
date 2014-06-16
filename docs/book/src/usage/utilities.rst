@@ -2,15 +2,15 @@
 Utilities
 =========
 
-Cuckoo comes with a set of pre-built utilities to automatize several common
+Cuckoo comes with a set of pre-built utilities to automate several common
 tasks.
-You can find them in "utils" folder.
+You can find them under the "utils" folder.
 
 Cleanup utility
 ===============
 
 If you want to delete all history, analysis, data and begin again from the first
-task you need clean.sh utility.
+task you need the clean.sh utility.
 
 .. note::
 
@@ -26,10 +26,13 @@ not running.
 If you are using a custom database (MySQL, PostgreSQL or SQLite in custom
 location) clean.sh doesn't clean it, you have to take care of that.
 
+If you are using MongoDB reporting module clean.sh doesn't clean your database,
+you have to take care of that.
+
 Submission Utility
 ==================
 
-Submits sample to analysis. This tool is already described in :doc:`submit`.
+Submits samples to analysis. This tool is already described in :doc:`submit`.
 
 Web Utility
 ===========
@@ -61,7 +64,7 @@ Following are the usage options::
 
     $ ./utils/community.py
 
-    usage: community.py [-h] [-a] [-s] [-p] [-m] [-r] [-f] [-w]
+    usage: community.py [-h] [-a] [-s] [-p] [-m] [-r] [-f] [-w] [-b BRANCH]
 
     optional arguments:
       -h, --help            show this help message and exit
@@ -73,9 +76,21 @@ Following are the usage options::
       -r, --reporting       Download reporting modules
       -f, --force           Install files without confirmation
       -w, --rewrite         Rewrite existing files
+      -b BRANCH, --branch BRANCH
+                            Specify a different branch
 
 *Example*: install all available signatures::
 
   $ ./utils/community.py --signatures --force
 
 .. _`Cuckoo Community Repository`: https://github.com/cuckoobox/community
+
+Database migration utility
+==========================
+
+This utility is developed to migrate your data between Cuckoo's release.
+It's developed on top of the `Alembic`_ framework and it should provide data
+migration for both SQL database and Mongo database.
+This tool is already described in :doc:`../installation/upgrade`.
+
+.. _`Alembic`: http://alembic.readthedocs.org/en/latest/
