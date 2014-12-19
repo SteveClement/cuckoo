@@ -30,7 +30,7 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "263a45963c72"
+SCHEMA_VERSION = "18eee46c6f81"
 TASK_PENDING = "pending"
 TASK_RUNNING = "running"
 TASK_COMPLETED = "completed"
@@ -91,7 +91,6 @@ class Machine(Base):
 
         # Tags are a relation so no column to iterate.
         d["tags"] = [tag.name for tag in self.tags]
-
         return d
 
     def to_json(self):
@@ -175,7 +174,7 @@ class Sample(Base):
 
     id = Column(Integer(), primary_key=True)
     file_size = Column(Integer(), nullable=False)
-    file_type = Column(String(255), nullable=False)
+    file_type = Column(Text(), nullable=False)
     md5 = Column(String(32), nullable=False)
     crc32 = Column(String(8), nullable=False)
     sha1 = Column(String(40), nullable=False)
@@ -324,14 +323,16 @@ class Database(object):
     """
     __metaclass__ = Singleton
 
-    def __init__(self, dsn=None):
-        """@param dsn: database connection string."""
+    def __init__(self, dsn=None, schema_check=True):
+        """@param dsn: database connection string.
+        @param schema_check: disable or enable the db schema version check
+        """
         cfg = Config()
 
         if dsn:
-            self.engine = create_engine(dsn, poolclass=NullPool)
+            self._connect_database(dsn)
         elif cfg.database.connection:
-            self.engine = create_engine(cfg.database.connection, poolclass=NullPool)
+            self._connect_database(cfg.database.connection)
         else:
             db_file = os.path.join(CUCKOO_ROOT, "db", "cuckoo.db")
             if not os.path.exists(db_file):
@@ -342,7 +343,7 @@ class Database(object):
                     except CuckooOperationalError as e:
                         raise CuckooDatabaseError("Unable to create database directory: {0}".format(e))
 
-            self.engine = create_engine("sqlite:///{0}".format(db_file), poolclass=NullPool)
+            self._connect_database("sqlite:///%s" % db_file)
 
         # Disable SQL logging. Turn it on for debugging.
         self.engine.echo = False
@@ -360,10 +361,11 @@ class Database(object):
         # Get db session.
         self.Session = sessionmaker(bind=self.engine)
 
-        # Set database schema version.
+        # Deal with schema versioning.
         # TODO: it's a little bit dirty, needs refactoring.
         tmp_session = self.Session()
         if not tmp_session.query(AlembicVersion).count():
+            # Set database schema version.
             tmp_session.add(AlembicVersion(version_num=SCHEMA_VERSION))
             try:
                 tmp_session.commit()
@@ -373,11 +375,31 @@ class Database(object):
             finally:
                 tmp_session.close()
         else:
+            # Check if db version is the expected one.
+            last = tmp_session.query(AlembicVersion).first()
             tmp_session.close()
+            if last.version_num != SCHEMA_VERSION and schema_check:
+                raise CuckooDatabaseError(
+                    "DB schema version mismatch: found {0}, expected {1}. "
+                    "Try to apply all migrations (cd utils/db_migration/ && "
+                    "alembic upgrade head).".format(last.version_num,
+                                                    SCHEMA_VERSION))
 
     def __del__(self):
         """Disconnects pool."""
         self.engine.dispose()
+
+    def _connect_database(self, connection_string):
+        """Connect to a Database.
+        @param connection_string: Connection string specifying the database
+        """
+        try:
+            self.engine = create_engine(connection_string, poolclass=NullPool)
+        except ImportError as e:
+            lib = e.message.split()[-1]
+            raise CuckooDependencyError("Missing database driver, unable to "
+                                        "import %s (install with `pip "
+                                        "install %s`)" % (lib, lib))
 
     def _get_or_create(self, session, model, **kwargs):
         """Get an ORM instance or create it if not exist.
@@ -407,6 +429,30 @@ class Database(object):
             session.rollback()
         finally:
             session.close()
+
+    def drop_samples(self):
+        """Drop all samples and their associated information."""
+        session = self.Session()
+        try:
+            session.query(Sample).delete()
+        except SQLAlchemyError as e:
+            log.debug("Database error dropping all samples: %s", e)
+            return False
+        finally:
+            session.rollback()
+        return True
+
+    def drop_tasks(self):
+        """Drop all tasks and their associated information."""
+        session = self.Session()
+        try:
+            session.query(Task).delete()
+        except SQLAlchemyError as e:
+            log.debug("Database error dropping all tasks: %s", e)
+            return False
+        finally:
+            session.rollback()
+        return True
 
     def add_machine(self, name, label, ip, platform, tags, interface,
                     snapshot, resultserver_ip, resultserver_port, versions_cpe):
@@ -443,7 +489,7 @@ class Database(object):
             log.debug("Database error adding machine: {0}".format(e))
             session.rollback()
         finally:
-            session.close()
+            session.close()        
 
     def set_status(self, task_id, status):
         """Set task status.
@@ -468,15 +514,17 @@ class Database(object):
         finally:
             session.close()
 
-    def fetch(self, lock=True):
+    def fetch(self, lock=True, machine=""):
         """Fetches a task waiting to be processed and locks it for running.
         @return: None or task
         """
         session = self.Session()
         row = None
-
         try:
-            row = session.query(Task).filter(Task.status == TASK_PENDING).order_by("priority desc, added_on").first()
+            if machine != "":
+                row = session.query(Task).filter_by(status=TASK_PENDING).filter(Machine.name==machine).order_by("priority desc, added_on").first()
+            else:
+                row = session.query(Task).filter_by(status=TASK_PENDING).order_by("priority desc, added_on").first()
 
             if not row:
                 return None
@@ -557,7 +605,7 @@ class Database(object):
                 machines = session.query(Machine).options(joinedload("tags")).all()
         except SQLAlchemyError as e:
             log.debug("Database error listing machines: {0}".format(e))
-            return None
+            return []
         finally:
             session.close()
         return machines
@@ -584,9 +632,9 @@ class Database(object):
         try:
             machines = session.query(Machine)
             if name:
-                machines = machines.filter(Machine.name == name)
+                machines = machines.filter_by(name=name)
             if platform:
-                machines = machines.filter(Machine.platform == platform)
+                machines = machines.filter_by(platform=platform)
             if tags:
                 for tag in tags:
                     machines = machines.filter(Machine.tags.any(name=tag.name))
@@ -623,7 +671,28 @@ class Database(object):
         @param label: virtual machine label
         @return: unlocked machine
         """
-        return self.set_machine_status(label, False)
+        session = self.Session()
+        try:
+            machine = session.query(Machine).filter_by(label=label).first()
+        except SQLAlchemyError as e:
+            log.debug("Database error unlocking machine: {0}".format(e))
+            session.close()
+            return None
+
+        if machine:
+            machine.locked = False
+            machine.locked_changed_on = datetime.now()
+            try:
+                session.commit()
+                session.refresh(machine)
+            except SQLAlchemyError as e:
+                log.debug("Database error locking machine: {0}".format(e))
+                session.rollback()
+                return None
+            finally:
+                session.close()
+
+        return machine
 
     def count_machines_available(self):
         """How many virtual machines are ready for analysis.
@@ -639,6 +708,20 @@ class Database(object):
             session.close()
         return machines_count
 
+    def get_available_machines(self):
+        """  Which machines are available
+        @return: free virtual machines
+        """
+        session = self.Session()
+        try:
+            machines = session.query(Machine).filter_by(locked=False)
+        except SQLAlchemyError as e:
+            log.debug("Database error getting available machines: {0}".format(e))
+            return 0
+        finally:
+            session.close()
+        return machines
+
     def set_machine_status(self, label, status):
         """Set status for a virtual machine.
         @param label: virtual machine label
@@ -646,7 +729,7 @@ class Database(object):
         """
         session = self.Session()
         try:
-            machine = session.query(Machine).filter(Machine.label == label).first()
+            machine = session.query(Machine).filter_by(label=label).first()
         except SQLAlchemyError as e:
             log.debug("Database error setting machine status: {0}".format(e))
             session.close()
@@ -725,8 +808,9 @@ class Database(object):
             except IntegrityError:
                 session.rollback()
                 try:
-                    sample = session.query(Sample).filter(Sample.md5 == obj.get_md5()).first()
-                except SQLAlchemyError:
+                    sample = session.query(Sample).filter_by(md5=obj.get_md5()).first()
+                except SQLAlchemyError as e:
+                    log.debug("Error querying sample for hash: {0}".format(e))
                     session.close()
                     return None
             except SQLAlchemyError as e:
@@ -797,6 +881,7 @@ class Database(object):
         @return: cursor or None.
         """
         if not file_path or not os.path.exists(file_path):
+            log.warning("File does not exist: %s.", file_path)
             return None
 
         # Convert empty strings and None values to a valid int
@@ -875,14 +960,18 @@ class Database(object):
                    tags, task.memory, task.enforce_timeout, task.clock)
 
     def list_tasks(self, limit=None, details=False, category=None,
-                   offset=None, status=None, not_status=None):
+                   offset=None, status=None, sample_id=None, not_status=None,
+                   completed_after=None, order_by=None):
         """Retrieve list of task.
         @param limit: specify a limit of entries.
         @param details: if details about must be included
         @param category: filter by category
         @param offset: list offset
         @param status: filter by task status
+        @param sample_id: filter tasks for a sample
         @param not_status: exclude this task status from filter
+        @param completed_after: only list tasks completed after this timestamp
+        @param order_by: definition which field to sort by
         @return: list of tasks.
         """
         session = self.Session()
@@ -890,18 +979,23 @@ class Database(object):
             search = session.query(Task)
 
             if status:
-                search = search.filter(Task.status == status)
+                search = search.filter_by(status=status)
             if not_status:
                 search = search.filter(Task.status != not_status)
             if category:
-                search = search.filter(Task.category == category)
+                search = search.filter_by(category=category)
             if details:
                 search = search.options(joinedload("guest"), joinedload("errors"), joinedload("tags"))
+            if sample_id is not None:
+                search = search.filter_by(sample_id=sample_id)
+            if completed_after:
+                search = search.filter(Task.completed_on > completed_after)
 
-            tasks = search.order_by("added_on desc").limit(limit).offset(offset).all()
+            search = search.order_by(order_by or "added_on desc")
+            tasks = search.limit(limit).offset(offset).all()
         except SQLAlchemyError as e:
             log.debug("Database error listing tasks: {0}".format(e))
-            return None
+            return []
         finally:
             session.close()
         return tasks
@@ -914,7 +1008,7 @@ class Database(object):
         session = self.Session()
         try:
             if status:
-                tasks_count = session.query(Task).filter(Task.status == status).count()
+                tasks_count = session.query(Task).filter_by(status=status).count()
             else:
                 tasks_count = session.query(Task).count()
         except SQLAlchemyError as e:
@@ -992,9 +1086,9 @@ class Database(object):
         session = self.Session()
         try:
             if md5:
-                sample = session.query(Sample).filter(Sample.md5 == md5).first()
+                sample = session.query(Sample).filter_by(md5=md5).first()
             elif sha256:
-                sample = session.query(Sample).filter(Sample.sha256 == sha256).first()
+                sample = session.query(Sample).filter_by(sha256=sha256).first()
         except SQLAlchemyError as e:
             log.debug("Database error searching sample: {0}".format(e))
             return None
@@ -1060,10 +1154,10 @@ class Database(object):
         """
         session = self.Session()
         try:
-            errors = session.query(Error).filter(Error.task_id == task_id).all()
+            errors = session.query(Error).filter_by(task_id=task_id).all()
         except SQLAlchemyError as e:
             log.debug("Database error viewing errors: {0}".format(e))
-            return None
+            return []
         finally:
             session.close()
         return errors

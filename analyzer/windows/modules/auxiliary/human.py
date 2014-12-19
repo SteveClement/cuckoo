@@ -35,6 +35,7 @@ def foreach_child(hwnd, lparam):
         "enable",
         "don't send",
         "continue",
+        "unzip",
     ]
 
     classname = create_unicode_buffer(50)
@@ -102,7 +103,7 @@ class Human(Auxiliary, Thread):
 
     def run(self):
         while self.do_run:
-            move_mouse()
             click_mouse()
+            move_mouse()
             USER32.EnumWindows(EnumWindowsProc(foreach_window), 0)
             KERNEL32.Sleep(1000)

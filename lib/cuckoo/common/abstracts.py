@@ -10,7 +10,6 @@ import time
 import xml.etree.ElementTree as ET
 
 from lib.cuckoo.common.config import Config
-from lib.cuckoo.common.constants import CUCKOO_ROOT
 from lib.cuckoo.common.exceptions import CuckooCriticalError
 from lib.cuckoo.common.exceptions import CuckooMachineError
 from lib.cuckoo.common.exceptions import CuckooOperationalError
@@ -54,12 +53,16 @@ class Auxiliary(object):
 
 class Machinery(object):
     """Base abstract class for machinery modules."""
+
+    # Default label used in machinery configuration file to supply virtual
+    # machine name/label/vmx path. Override it if you dubbed it in another
+    # way.
     LABEL = "label"
 
     def __init__(self):
         self.module_name = ""
         self.options = None
-        self.options_globals = Config(os.path.join(CUCKOO_ROOT, "conf", "cuckoo.conf"))
+        self.options_globals = Config()
         # Database pointer.
         self.db = Database()
 
@@ -551,38 +554,37 @@ class LibVirtMachinery(Machinery):
         @raise CuckooMachineError: if cannot find current snapshot or
                                    when there are too many snapshots available
         """
-        # Checks for current snapshots.
+        def _extract_creation_time(node):
+            """Extracts creation time from a KVM vm config file.
+            @param node: config file node
+            @return: extracted creation time
+            """
+            xml = ET.fromstring(node.getXMLDesc(flags=0))
+            return xml.findtext("./creationTime")
+
+        snapshot = None
         conn = self._connect()
         try:
             vm = self.vms[label]
-            snap = vm.hasCurrentSnapshot(flags=0)
+
+            # Try to get the currrent snapshot, otherwise fallback on the latest
+            # from config file.
+            if vm.hasCurrentSnapshot(flags=0):
+                snapshot = vm.snapshotCurrent(flags=0)
+            else:
+                log.debug("No current snapshot, using latest snapshot")
+
+                # No current snapshot, try to get the last one from config file.
+                snapshot = sorted(vm.listAllSnapshots(flags=0),
+                                  key=_extract_creation_time,
+                                  reverse=True)[0]
         except libvirt.libvirtError:
-            self._disconnect(conn)
-            raise CuckooMachineError("Unable to get current snapshot for "
+            raise CuckooMachineError("Unable to get snapshot for "
                                      "virtual machine {0}".format(label))
         finally:
             self._disconnect(conn)
 
-        if snap:
-            return vm.snapshotCurrent(flags=0)
-
-        # If no current snapshot, get the last one.
-        conn = self._connect()
-        try:
-            snaps = vm[label].snapshotListNames(flags=0)
-
-            def get_create(sn):
-                xml_desc = sn.getXMLDesc(flags=0)
-                return ET.fromstring(xml_desc).findtext("./creationTime")
-
-            return max(get_create(vm.snapshotLookupByName(name, flags=0))
-                       for name in snaps)
-        except libvirt.libvirtError:
-            return None
-        except ValueError:
-            return None
-        finally:
-            self._disconnect(conn)
+        return snapshot
 
 class Processing(object):
     """Base abstract class for processing module."""
@@ -884,6 +886,33 @@ class Signature(object):
             return self._current_call_dict[name]
 
         return None
+
+    def add_match(self, process, type, match):
+        """Adds a match to the signature data.
+        @param process: The process triggering the match.
+        @param type: The type of matching data (ex: 'api', 'mutex', 'file', etc.)
+        @param match: Value or array of values triggering the match.
+        """
+        signs = []
+        if isinstance(match, list):
+            for item in match:
+                signs.append({ 'type': type, 'value': item })
+        else:
+            signs.append({ 'type': type, 'value': match })
+
+        process_summary = None
+        if process:
+            process_summary = {}
+            process_summary['process_name'] = process['process_name']
+            process_summary['process_id'] = process['process_id']
+
+        self.data.append({ 'process': process_summary, 'signs': signs })
+
+    def has_matches(self):
+        """Returns true if there is matches (data is not empty)
+        @return: boolean indicating if there is any match registered
+        """
+        return len(self.data) > 0
 
     def on_call(self, call, process):
         """Notify signature about API call. Return value determines

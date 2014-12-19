@@ -81,7 +81,7 @@ def add_file(file_path):
         FILES_LIST.append(file_path)
 
 def dump_file(file_path):
-    """Create a copy of the give file path."""
+    """Create a copy of the given file path."""
     try:
         if os.path.exists(file_path):
             sha256 = hash_file(hashlib.sha256, file_path)
@@ -249,7 +249,7 @@ class PipeHandler(Thread):
                 if "," not in data:
                     if data.isdigit():
                         process_id = int(data)
-                elif data.count(",") == 2:
+                elif data.count(",") == 1:
                     process_id, param = data.split(",")
                     thread_id = None
                     if process_id.isdigit():
@@ -295,12 +295,9 @@ class PipeHandler(Thread):
                                     # no race conditions occur.
                                     proc.inject(dll)
                                     wait = True
-
-                                log.info("Successfully injected process with "
-                                         "pid %s", proc.pid)
                     else:
                         log.warning("Received request to inject Cuckoo "
-                                    "processes, skip")
+                                    "process with pid %d, skip", process_id)
 
                 # Once we're done operating on the processes list, we release
                 # the lock.
@@ -435,7 +432,7 @@ class Analyzer:
         os.system("echo:|time {0}".format(clock.strftime("%H:%M:%S")))
 
         # Set the default DLL to be used by the PipeHandler.
-        DEFAULT_DLL = self.get_options().get("dll", None)
+        DEFAULT_DLL = self.config.get_options().get("dll")
 
         # Initialize and start the Pipe Servers. This is going to be used for
         # communicating with the injected and monitored processes.
@@ -453,37 +450,6 @@ class Analyzer:
         else:
             self.target = self.config.target
 
-    def get_options(self):
-        """Get analysis options.
-        @return: options dict.
-        """
-        # The analysis package can be provided with some options in the
-        # following format:
-        #   option1=value1,option2=value2,option3=value3
-        #
-        # Here we parse such options and provide a dictionary that will be made
-        # accessible to the analysis package.
-        options = {}
-        if self.config.options:
-            try:
-                # Split the options by comma.
-                fields = self.config.options.strip().split(",")
-            except ValueError as e:
-                log.warning("Failed parsing the options: %s", e)
-            else:
-                for field in fields:
-                    # Split the name and the value of the option.
-                    try:
-                        key, value = field.strip().split("=")
-                    except ValueError as e:
-                        log.warning("Failed parsing option (%s): %s", field, e)
-                    else:
-                        # If the parsing went good, we add the option to the
-                        # dictionary.
-                        options[key.strip()] = value.strip()
-
-        return options
-
     def complete(self):
         """End analysis."""
         # Stop the Pipe Servers.
@@ -494,7 +460,7 @@ class Analyzer:
         dump_files()
 
         # Hell yeah.
-        log.info("Analysis completed")
+        log.info("Analysis completed.")
 
     def run(self):
         """Run analysis.
@@ -502,15 +468,16 @@ class Analyzer:
         """
         self.prepare()
 
-        log.info("Starting analyzer from: %s", os.getcwd())
-        log.info("Storing results at: %s", PATHS["root"])
-        log.info("Pipe server name: %s", PIPE)
+        log.debug("Starting analyzer from: %s", os.getcwd())
+        log.debug("Storing results at: %s", PATHS["root"])
+        log.debug("Pipe server name: %s", PIPE)
 
         # If no analysis package was specified at submission, we try to select
         # one automatically.
         if not self.config.package:
-            log.info("No analysis package specified, trying to detect "
-                     "it automagically.")
+            log.debug("No analysis package specified, trying to detect "
+                      "it automagically.")
+
             # If the analysis target is a file, we choose the package according
             # to the file format.
             if self.config.category == "file":
@@ -545,7 +512,7 @@ class Analyzer:
         # Initialize the package parent abstract.
         Package()
 
-        # Enumerate the abstract's subclasses.
+        # Enumerate the abstract subclasses.
         try:
             package_class = Package.__subclasses__()[0]
         except IndexError as e:
@@ -553,7 +520,7 @@ class Analyzer:
                               "(package={0}): {1}".format(package_name, e))
 
         # Initialize the analysis package.
-        pack = package_class(self.get_options())
+        pack = package_class(self.config.get_options())
 
         # Initialize Auxiliary modules
         Auxiliary()
@@ -586,8 +553,8 @@ class Analyzer:
                             aux.__class__.__name__, e)
                 continue
             finally:
-                log.info("Started auxiliary module %s",
-                         aux.__class__.__name__)
+                log.debug("Started auxiliary module %s",
+                          aux.__class__.__name__)
                 aux_enabled.append(aux)
 
         # Start analysis package. If for any reason, the execution of the
@@ -616,13 +583,13 @@ class Analyzer:
         # enable the process monitor.
         else:
             log.info("No process IDs returned by the package, running "
-                     "for the full timeout")
+                     "for the full timeout.")
             pid_check = False
 
         # Check in the options if the user toggled the timeout enforce. If so,
         # we need to override pid_check and disable process monitor.
         if self.config.enforce_timeout:
-            log.info("Enabled timeout enforce, running for the full timeout")
+            log.info("Enabled timeout enforce, running for the full timeout.")
             pid_check = False
 
         time_counter = 0
@@ -630,7 +597,7 @@ class Analyzer:
         while True:
             time_counter += 1
             if time_counter == int(self.config.timeout):
-                log.info("Analysis timeout hit, terminating analysis")
+                log.info("Analysis timeout hit, terminating analysis.")
                 break
 
             # If the process lock is locked, it means that something is
@@ -668,7 +635,7 @@ class Analyzer:
                     # to be terminate.
                     if not pack.check():
                         log.info("The analysis package requested the "
-                                 "termination of the analysis...")
+                                 "termination of the analysis.")
                         break
 
                 # If the check() function of the package raised some exception
@@ -702,17 +669,18 @@ class Analyzer:
                 log.warning("Cannot terminate auxiliary module %s: %s",
                             aux.__class__.__name__, e)
 
-        # Try to terminate remaining active processes. We do this to make sure
-        # that we clean up remaining open handles (sockets, files, etc.).
-        log.info("Terminating remaining processes before shutdown...")
+        if self.config.terminate_processes:
+            # Try to terminate remaining active processes. We do this to make sure
+            # that we clean up remaining open handles (sockets, files, etc.).
+            log.info("Terminating remaining processes before shutdown.")
 
-        for pid in PROCESS_LIST:
-            proc = Process(pid=pid)
-            if proc.is_alive():
-                try:
-                    proc.terminate()
-                except:
-                    continue
+            for pid in PROCESS_LIST:
+                proc = Process(pid=pid)
+                if proc.is_alive():
+                    try:
+                        proc.terminate()
+                    except:
+                        continue
 
         # Run the finish callback of every available Auxiliary module.
         for aux in aux_avail:
@@ -753,7 +721,7 @@ if __name__ == "__main__":
         error = str(e)
 
         # Just to be paranoid.
-        if len(log.handlers) > 0:
+        if len(log.handlers):
             log.exception(error_exc)
         else:
             sys.stderr.write("{0}\n".format(error_exc))

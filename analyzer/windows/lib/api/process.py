@@ -16,6 +16,7 @@ from lib.common.defines import STARTUPINFO, PROCESS_INFORMATION
 from lib.common.defines import CREATE_NEW_CONSOLE, CREATE_SUSPENDED
 from lib.common.defines import MEM_RESERVE, MEM_COMMIT, PAGE_READWRITE
 from lib.common.defines import MEMORY_BASIC_INFORMATION
+from lib.common.defines import MEM_IMAGE, MEM_MAPPED, MEM_PRIVATE
 from lib.common.errors import get_error_string
 from lib.common.rand import random_string
 from lib.common.results import NetlogFile
@@ -217,7 +218,7 @@ class Process:
             self.thread_id = process_info.dwThreadId
             self.h_thread = process_info.hThread
             log.info("Successfully executed process from path \"%s\" with "
-                     "arguments \"%s\" with pid %d", path, args, self.pid)
+                     "arguments \"%s\" with pid %d", path, args or "", self.pid)
             return True
         else:
             log.error("Failed to execute process from path \"%s\" with "
@@ -254,10 +255,10 @@ class Process:
             self.open()
 
         if KERNEL32.TerminateProcess(self.h_process, 1):
-            log.info("Successfully terminated process with pid %d", self.pid)
+            log.info("Successfully terminated process with pid %d.", self.pid)
             return True
         else:
-            log.error("Failed to terminate process with pid %d", self.pid)
+            log.error("Failed to terminate process with pid %d.", self.pid)
             return False
 
     def inject(self, dll=None, apc=False):
@@ -313,6 +314,7 @@ class Process:
         config_path = os.path.join(os.getenv("TEMP"), "%s.ini" % self.pid)
         with open(config_path, "w") as config:
             cfg = Config("analysis.conf")
+            cfgoptions = cfg.get_options()
 
             # The first time we come up with a random startup-time.
             if Process.first_process:
@@ -326,14 +328,15 @@ class Process:
             config.write("pipe={0}\n".format(PIPE))
             config.write("results={0}\n".format(PATHS["root"]))
             config.write("analyzer={0}\n".format(os.getcwd()))
-            config.write("first-process={0}\n".format(Process.first_process))
+            config.write("first-process={0}\n".format("1" if Process.first_process else "0"))
             config.write("startup-time={0}\n".format(Process.startup_time))
             config.write("shutdown-mutex={0}\n".format(SHUTDOWN_MUTEX))
+            config.write("force-sleepskip={0}\n".format(cfgoptions.get("force-sleepskip", "0")))
 
             Process.first_process = False
 
         if apc or self.suspended:
-            log.info("Using QueueUserAPC injection")
+            log.debug("Using QueueUserAPC injection.")
             if not self.h_thread:
                 log.info("No valid thread handle specified for injecting "
                          "process with pid %d, injection aborted.", self.pid)
@@ -344,7 +347,6 @@ class Process:
                           "pid %d (Error: %s)",
                           self.pid, get_error_string(KERNEL32.GetLastError()))
                 return False
-            log.info("Successfully injected process with pid %d." % self.pid)
         else:
             event_name = "CuckooEvent%d" % self.pid
             self.event_handle = KERNEL32.CreateEventA(None,
@@ -355,7 +357,7 @@ class Process:
                 log.warning("Unable to create notify event..")
                 return False
 
-            log.info("Using CreateRemoteThread injection.")
+            log.debug("Using CreateRemoteThread injection.")
             new_thread_id = c_ulong(0)
             thread_handle = KERNEL32.CreateRemoteThread(self.h_process,
                                                         None,
@@ -373,6 +375,8 @@ class Process:
                 return False
             else:
                 KERNEL32.CloseHandle(thread_handle)
+
+        log.info("Successfully injected process with pid %d." % self.pid)
 
         return True
 
@@ -409,7 +413,7 @@ class Process:
             os.makedirs(root)
 
         # Now upload to host from the StringIO.
-        nf = NetlogFile("memory/%s.dmp" % str(self.pid))
+        nf = NetlogFile(os.path.join("memory", "%s.dmp" % str(self.pid)))
 
         while mem < max_addr:
             mbi = MEMORY_BASIC_INFORMATION()
@@ -422,7 +426,8 @@ class Process:
                 mem += page_size
                 continue
 
-            if mbi.State == 0x1000 and mbi.Type == 0x20000:
+            if mbi.State & MEM_COMMIT and \
+                    mbi.Type & (MEM_IMAGE | MEM_MAPPED | MEM_PRIVATE):
                 buf = create_string_buffer(mbi.RegionSize)
                 if KERNEL32.ReadProcessMemory(self.h_process,
                                               mem,

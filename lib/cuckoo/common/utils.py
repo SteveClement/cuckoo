@@ -106,10 +106,11 @@ def get_filename_from_path(path):
     dirpath, filename = ntpath.split(path)
     return filename if filename else ntpath.basename(dirpath)
 
-def store_temp_file(filedata, filename):
+def store_temp_file(filedata, filename, path=None):
     """Store a temporary file.
     @param filedata: content of the original file.
     @param filename: name of the original file.
+    @param path: optional path for temp directory.
     @return: path to the temporary file.
     """
     filename = get_filename_from_path(filename)
@@ -117,13 +118,17 @@ def store_temp_file(filedata, filename):
     # Reduce length (100 is arbitrary).
     filename = filename[:100]
 
-    options = Config(os.path.join(CUCKOO_ROOT, "conf", "cuckoo.conf"))
-    tmppath = options.cuckoo.tmppath
-    targetpath = os.path.join(tmppath, "cuckoo-tmp")
-    if not os.path.exists(targetpath):
-        os.mkdir(targetpath)
+    options = Config()
+    # Create temporary directory path.
+    if path:
+        target_path = path
+    else:
+        tmp_path = options.cuckoo.get("tmppath", "/tmp")
+        target_path = os.path.join(tmp_path, "cuckoo-tmp")
+    if not os.path.exists(target_path):
+        os.mkdir(target_path)
 
-    tmp_dir = tempfile.mkdtemp(prefix="upload_", dir=targetpath)
+    tmp_dir = tempfile.mkdtemp(prefix="upload_", dir=target_path)
     tmp_file_path = os.path.join(tmp_dir, filename)
     with open(tmp_file_path, "wb") as tmp_file:
         # If filedata is file object, do chunked copy.

@@ -34,6 +34,7 @@ class Package(object):
         return True
 
     def _enum_paths(self):
+        """Enumerate available paths."""
         for path in self.PATHS:
             basedir = path[0]
             if basedir == "SystemRoot":
@@ -43,10 +44,19 @@ class Package(object):
                 if os.getenv("ProgramFiles(x86)"):
                     yield os.path.join(os.getenv("ProgramFiles(x86)"),
                                        *path[1:])
+            elif basedir == "HomeDrive":
+                # os.path.join() does not work well when giving just C:
+                # instead of C:\\, so we manually add the backslash.
+                homedrive = os.getenv("HomeDrive") + "\\"
+                yield os.path.join(homedrive, *path[1:])
             else:
                 yield os.path.join(*path)
 
     def get_path(self, application):
+        """Search for an application in all available paths.
+        @param applicaiton: application executable name
+        @return: executable path
+        """
         for path in self._enum_paths():
             if os.path.exists(path):
                 return path
@@ -55,6 +65,11 @@ class Package(object):
                                  application)
 
     def execute(self, path, args):
+        """Starts an executable for analysis.
+        @param path: executable path
+        @param args: executable arguments
+        @return: process pid
+        """
         dll = self.options.get("dll")
         free = self.options.get("free")
         suspended = True
@@ -70,7 +85,8 @@ class Package(object):
             p.inject(dll)
             p.resume()
             p.close()
-            return p.pid
+        
+        return p.pid
 
     def finish(self):
         """Finish run.
@@ -81,6 +97,7 @@ class Package(object):
             for pid in self.pids:
                 p = Process(pid=pid)
                 p.dump_memory()
+        
         return True
 
 
